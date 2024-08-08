@@ -72,6 +72,12 @@ class Smh:
         # Check if plugin was started the first time in current QGIS session
         # Must be set in initGui() to survive plugin reloads
         self.first_start = None
+        self.connection = None
+        self.username = None
+        self.password = None
+        self.host = None
+        self.port = None
+        self.database_name = None
 
     # noinspection PyMethodMayBeStatic
     def tr(self, message):
@@ -173,32 +179,33 @@ class Smh:
             parent=self.iface.mainWindow())
         #get the valeus
         self.smh_dialog.connect_db.clicked.connect(self.__connect_to_database)
+        self.main_window.runBtn.clicked.connect(self.__add_to_qgis_project)
         # will be set False in run()
         self.first_start = True
-
+    cursor = ''
     def __connect_to_database(self):
         #establishing the connection with the postgresql
         try:
-            username = self.smh_dialog.username.text()
-            password = self.smh_dialog.password.text()
-            host = self.smh_dialog.host.text()
-            port = self.smh_dialog.port.text()
-            database_name = self.smh_dialog.dbname.text()
-            connection = psycopg2.connect(
-            dbname=database_name,
-            user=username,
-            password=password,
-            host=host,
-            port=port
+            self.username = self.smh_dialog.username.text()
+            self.password = self.smh_dialog.password.text()
+            self.host = self.smh_dialog.host.text()
+            self.port = self.smh_dialog.port.text()
+            self.database_name = self.smh_dialog.dbname.text()
+            self.connection = psycopg2.connect(
+            dbname=self.database_name,
+            user=self.username,
+            password=self.password,
+            host=self.host,
+            port=self.port
             )
-            cursor = connection.cursor()
+            cursor = self.connection.cursor()
             # open the main window and populate the combobox of the comboboxs
             if cursor:
                 self.open_main_window()
                 self.add_data_to_combobox(cursor=cursor, \
                     query="select distinct commune from cadastre;", combo_name=self.main_window.commune)
                 self.add_data_to_combobox(cursor=cursor, \
-                    query="select distinct lieudit from cadastre;", combo_name=self.main_window.lieudit)
+                    query="select distinct lieudit from cadastre ORDER BY lieudit ASC;", combo_name=self.main_window.lieudit)
                 self.add_data_to_combobox(cursor=cursor, \
                     query="select distinct proprio from cadastre;", combo_name=self.main_window.proprio)
                 self.add_data_to_combobox(cursor=cursor, \
@@ -209,7 +216,6 @@ class Smh:
                 print(f"Error cant establish the connection")
         except Exception as e:
             print(f"Error: {e}")
-        
 
     def open_main_window(self):
         self.main_window.show()
@@ -225,6 +231,60 @@ class Smh:
         else:
             print("No categories found.")
 
+    def get_data_from_UI(self):
+        data = []
+        try:
+            # Get data from QComboBox and QLineEdit widgets
+            data.append('commune ILIKE \'%' + self.main_window.commune.currentText().strip() + '%\'')
+            data.append('lieudit ILIKE \'%' + self.main_window.lieudit.currentText().strip() + '%\'')
+            data.append('proprio ILIKE \'%' + self.main_window.proprio.currentText().strip() + '%\'')
+            data.append('pres_sol ILIKE \'%' + self.main_window.pres_sol.currentText().strip() + '%\'') 
+            data.append('pres_bati ILIKE \'%' + self.main_window.pres_bati.currentText().strip() + '%\'')
+
+            selected_fields = ' AND '.join(data)
+            
+            # Default values for conditions
+            conditions = []
+            conditions.append('nbr_parc' + self.main_window.nbrParc.text())  # Default condition to avoid SQL errors
+            conditions.append('surface' + self.main_window.surface.text())
+            conditions.append('surfaceCompte' + self.main_window.surfaceCompte.text())
+
+            # Join conditions with AND
+            where_condition = ' OR '.join(conditions)
+
+            return [selected_fields, where_condition]
+
+        except Exception as e:
+            print(f"Error in get_data_from_UI: {e}")
+            return [None, None]
+
+    def __add_to_qgis_project(self):
+        cursor = self.connection.cursor()
+        cursor = self.connection.cursor()
+        selected_fields, where_condition = self.get_data_from_UI()
+        prepare_query = "SELECT * FROM cadastre LIMIT 10"
+        if selected_fields: 
+            prepare_query = f"SELECT * FROM cadastre WHERE ({selected_fields})"
+            if where_condition:
+                prepare_query + " AND (" + where_condition + " )"
+        print(prepare_query)
+        cursor.execute(prepare_query)
+        rows = cursor.fetchall()
+        temp_table = f"temp_cadastre"
+        cursor.execute(f"DROP TABLE IF EXISTS {temp_table}")
+        cursor.execute(f"CREATE TABLE {temp_table} AS {prepare_query}")
+        self.connection.commit()
+        uri = QgsDataSourceUri()
+        uri.setConnection(self.host, self.port, self.database_name, self.username, self.password)
+        uri.setDataSource('public', temp_table, 'geom')
+        layer = QgsVectorLayer(uri.uri(), 'cadastre', "postgres")
+        if layer.isValid():
+                QgsProject.instance().addMapLayer(layer)
+        else:
+            print("Layer failed to load!")
+        cursor.close()
+        self.connection.close()
+
     def unload(self):
         """Removes the plugin menu item and icon from QGIS GUI."""
         for action in self.actions:
@@ -232,7 +292,6 @@ class Smh:
                 self.tr(u'&SMH'),
                 action)
             self.iface.removeToolBarIcon(action)
-
 
     def run(self):
         """Run method that performs all the real work"""
@@ -254,7 +313,7 @@ class Smh:
             pass
 
 """
-cursor.execute("SELECT * FROM cadastre LIMIT 10")
+        cursor.execute("SELECT * FROM cadastre LIMIT 10")
         rows = cursor.fetchall()
         temp_table = f"temp_cadastre"
         cursor.execute(f"CREATE TABLE {temp_table} AS SELECT * FROM cadastre LIMIT 10")
